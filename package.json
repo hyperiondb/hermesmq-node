@@ -8,7 +8,6 @@
   "keywords": [
     "message-queue",
     "raft",
-    "node",
     "pubsub",
     "queue"
   ],
