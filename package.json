@@ -1,0 +1,39 @@
+{
+  "name": "hermesmq-node",
+  "version": "0.1.0",
+  "description": "Native Node.js client for hermesmq, a Raft-replicated message queue.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "GPL-3.0-or-later",
+  "keywords": [
+    "message-queue",
+    "raft",
+    "node",
+    "pubsub",
+    "queue"
+  ],
+  "engines": {
+    "node": ">= v24"
+  },
+  "author": "Tadas Talaikis <info@nordlet.com>",
+  "napi": {
+    "binaryName": "hermesmq-node",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl"
+    ]
+  },
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "3.7.0"
+  }
+}
