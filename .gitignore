@@ -1,6 +1,4 @@
 /target
 node_modules/
 *.node
-index.js
-index.d.ts
 npm/
