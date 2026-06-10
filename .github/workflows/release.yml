@@ -164,5 +164,5 @@ jobs:
           git add package.json Cargo.toml
           git commit -m "release: v${{ needs.version.outputs.version }}"
           git push origin HEAD:${{ github.ref_name }}
-          git tag "v${{ needs.version.outputs.version }}"
-          git push origin "v${{ needs.version.outputs.version }}"
+          git tag -f "v${{ needs.version.outputs.version }}"
+          git push --force origin "v${{ needs.version.outputs.version }}"
