@@ -38,15 +38,15 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          #- host: windows-latest
-          #  target: x86_64-pc-windows-msvc
-          #  build: napi build --platform --release --target x86_64-pc-windows-msvc
-          #- host: macos-latest
-          #  target: aarch64-apple-darwin
-          #  build: napi build --platform --release --target aarch64-apple-darwin
-          #- host: macos-latest
-          #  target: x86_64-apple-darwin
-          #  build: napi build --platform --release --target x86_64-apple-darwin
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            build: napi build --platform --release --target x86_64-pc-windows-msvc
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            build: napi build --platform --release --target aarch64-apple-darwin
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            build: napi build --platform --release --target x86_64-apple-darwin
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             build: napi build --platform --release --target x86_64-unknown-linux-gnu --cross-compile
@@ -164,3 +164,5 @@ jobs:
           git add package.json Cargo.toml
           git commit -m "release: v${{ needs.version.outputs.version }}"
           git push origin HEAD:${{ github.ref_name }}
+          git tag "v${{ needs.version.outputs.version }}"
+          git push origin "v${{ needs.version.outputs.version }}"

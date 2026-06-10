@@ -11,8 +11,16 @@
     "pubsub",
     "queue"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyperiondb/hermesmq-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hyperiondb/hermesmq-node/issues"
+  },
+  "homepage": "https://github.com/hyperiondb/hermesmq-node#readme",
   "engines": {
-    "node": ">= v24"
+    "node": ">= 20"
   },
   "author": "Tadas Talaikis <info@nordlet.com>",
   "napi": {
@@ -21,7 +29,10 @@
       "x86_64-unknown-linux-gnu",
       "aarch64-unknown-linux-gnu",
       "x86_64-unknown-linux-musl",
-      "aarch64-unknown-linux-musl"
+      "aarch64-unknown-linux-musl",
+      "x86_64-pc-windows-msvc",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin"
     ]
   },
   "files": [
@@ -30,7 +41,8 @@
   ],
   "scripts": {
     "build": "napi build --platform --release",
-    "build:debug": "napi build --platform"
+    "build:debug": "napi build --platform",
+    "test": "node smoke.mjs && node subscribe-smoke.mjs"
   },
   "devDependencies": {
     "@napi-rs/cli": "3.7.0"

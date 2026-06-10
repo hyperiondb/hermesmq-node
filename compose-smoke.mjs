@@ -8,7 +8,7 @@ const nodes = [
 
 let ok = false;
 try {
-  const client = await connect(nodes);
+  const client = await connect(nodes, { bootstrap: true });
   await client.createTopic({ topic: "orders" });
 
   const offset = await client.produce({
