@@ -1,6 +1,6 @@
 {
   "name": "hermesmq-node",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Native Node.js client for hermesmq, a Raft-replicated message queue.",
   "main": "index.js",
   "types": "index.d.ts",
