@@ -60,7 +60,8 @@ await client.createTopic({
 });
 ```
 
-`rateLimit` and `retention` are optional.
+`rateLimit` and `retention` are optional. The rate limit paces delivery to consumers; produce is
+never rate limited — bursts queue up and drain at `ratePerSec`.
 
 ## Producing
 

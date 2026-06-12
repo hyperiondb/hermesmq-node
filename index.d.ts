@@ -4,6 +4,7 @@ export declare class Client {
   bootstrap(): Promise<void>
   createTopic(options: CreateTopicOptions): Promise<void>
   produce(options: ProduceOptions): Promise<string>
+  produceMany(items: Array<ProduceOptions>): Promise<Array<ProduceManyResult>>
   poll(options: PollOptions): Promise<Array<DeliveredMessage>>
   subscribe(options: SubscribeOptions, onMessage: (msg: DeliveredMessage) => void | Promise<void>, onError?: (err: string) => void): Promise<Subscription>
   ack(lease: LeaseRef): Promise<void>
@@ -68,10 +69,17 @@ export interface PollOptions {
   waitMs?: number
 }
 
+export interface ProduceManyResult {
+  offset?: string
+  error?: string
+}
+
 export interface ProduceOptions {
   topic: string
   body: Buffer
   priority?: number
+  producerId?: string
+  seq?: number
 }
 
 export interface RateLimit {

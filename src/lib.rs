@@ -14,6 +14,7 @@ use prost::Message as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{mpsc, oneshot};
 
 const MAX_FRAME: usize = 64 * 1024 * 1024;
 const MAX_IDLE_PER_NODE: usize = 4;
@@ -21,6 +22,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const BASE_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const CALL_BACKOFF_CAP_MS: u64 = 500;
 const SUBSCRIBE_BACKOFF_CAP_MS: u64 = 5_000;
+const PIPELINE_DEPTH: usize = 32;
+const PIPELINE_QUEUE: usize = 1024;
 
 type OnMessage =
     ThreadsafeFunction<DeliveredMessage, MaybePromise, DeliveredMessage, Status, false>;
@@ -103,6 +106,14 @@ pub struct ProduceOptions {
     pub topic: String,
     pub body: Buffer,
     pub priority: Option<u32>,
+    pub producer_id: Option<String>,
+    pub seq: Option<i64>,
+}
+
+#[napi(object)]
+pub struct ProduceManyResult {
+    pub offset: Option<String>,
+    pub error: Option<String>,
 }
 
 #[napi(object)]
@@ -163,6 +174,81 @@ struct Inner {
     nodes: Vec<NodeRec>,
     leader: AtomicUsize,
     pools: Vec<Mutex<Vec<TcpStream>>>,
+    pipes: Vec<Mutex<Option<PipelineHandle>>>,
+}
+
+struct PipelineJob {
+    req: Request,
+    reply: oneshot::Sender<io::Result<Response>>,
+}
+
+#[derive(Clone)]
+struct PipelineHandle {
+    tx: mpsc::Sender<PipelineJob>,
+}
+
+impl PipelineHandle {
+    async fn request(&self, req: Request, read_timeout: Duration) -> io::Result<Response> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(PipelineJob { req, reply })
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "produce pipeline is closed"))?;
+        match tokio::time::timeout(read_timeout, rx).await {
+            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "response timed out")),
+            Ok(Err(_)) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "produce pipeline dropped the request",
+            )),
+            Ok(Ok(result)) => result,
+        }
+    }
+}
+
+async fn run_pipeline(stream: TcpStream, mut jobs: mpsc::Receiver<PipelineJob>) {
+    let (mut read_half, mut write_half) = stream.into_split();
+    let (pending_tx, mut pending_rx) =
+        mpsc::channel::<oneshot::Sender<io::Result<Response>>>(PIPELINE_DEPTH);
+
+    let reader = tokio::spawn(async move {
+        while let Some(reply) = pending_rx.recv().await {
+            let result = match read_frame(&mut read_half).await {
+                Ok(buf) => Response::decode(buf.as_slice()).map_err(io::Error::other),
+                Err(e) => Err(e),
+            };
+            let failed = result.is_err();
+            let _ = reply.send(result);
+            if failed {
+                break;
+            }
+        }
+        while let Ok(reply) = pending_rx.try_recv() {
+            let _ = reply.send(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "connection lost",
+            )));
+        }
+    });
+
+    while let Some(job) = jobs.recv().await {
+        let frame = job.req.encode_to_vec();
+        if pending_tx.send(job.reply).await.is_err() {
+            break;
+        }
+        if write_frame(&mut write_half, &frame).await.is_err() {
+            break;
+        }
+    }
+    drop(pending_tx);
+    drop(write_half);
+    let _ = reader.await;
+    jobs.close();
+    while let Ok(job) = jobs.try_recv() {
+        let _ = job.reply.send(Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "connection lost",
+        )));
+    }
 }
 
 fn backoff(failures: u32, cap_ms: u64) -> Duration {
@@ -236,6 +322,30 @@ impl Inner {
         }
     }
 
+    async fn pipeline(&self, idx: usize) -> io::Result<PipelineHandle> {
+        if let Some(handle) = self.pipes[idx].lock().unwrap().clone() {
+            if !handle.tx.is_closed() {
+                return Ok(handle);
+            }
+        }
+        let stream = self.fresh(idx).await?;
+        let mut slot = self.pipes[idx].lock().unwrap();
+        if let Some(handle) = slot.as_ref() {
+            if !handle.tx.is_closed() {
+                return Ok(handle.clone());
+            }
+        }
+        let (tx, rx) = mpsc::channel(PIPELINE_QUEUE);
+        tokio::spawn(run_pipeline(stream, rx));
+        let handle = PipelineHandle { tx };
+        *slot = Some(handle.clone());
+        Ok(handle)
+    }
+
+    fn drop_pipeline(&self, idx: usize) {
+        self.pipes[idx].lock().unwrap().take();
+    }
+
     async fn call_node(
         &self,
         idx: usize,
@@ -291,6 +401,55 @@ async fn call(inner: &Inner, req: &Request, read_timeout: Duration) -> Result<Re
     )))
 }
 
+async fn call_pipelined(inner: &Inner, req: &Request, read_timeout: Duration) -> Result<Response> {
+    let n = inner.nodes.len();
+    let attempts = (n * 3).max(3);
+    let mut idx = inner.leader.load(Ordering::Relaxed);
+    let mut last = String::new();
+    for attempt in 0..attempts {
+        let i = idx % n;
+        let pipe = match inner.pipeline(i).await {
+            Ok(p) => p,
+            Err(e) => {
+                last = format!("{}: {e}", inner.nodes[i].client_addr);
+                idx = i + 1;
+                if attempt + 1 < attempts {
+                    tokio::time::sleep(backoff(attempt as u32, CALL_BACKOFF_CAP_MS)).await;
+                }
+                continue;
+            }
+        };
+        match pipe.request(req.clone(), read_timeout).await {
+            Ok(resp) => {
+                if let Some(response::Kind::Error(e)) = &resp.kind {
+                    if e.code == "not_leader" {
+                        last = format!("not_leader from {}", inner.nodes[i].client_addr);
+                        inner.drop_pipeline(i);
+                        idx = inner.peer_index(&e.leader_addr).unwrap_or(i + 1);
+                        if attempt + 1 < attempts {
+                            tokio::time::sleep(backoff(attempt as u32, CALL_BACKOFF_CAP_MS)).await;
+                        }
+                        continue;
+                    }
+                }
+                inner.leader.store(i, Ordering::Relaxed);
+                return Ok(resp);
+            }
+            Err(e) => {
+                last = format!("{}: {e}", inner.nodes[i].client_addr);
+                inner.drop_pipeline(i);
+                idx = i + 1;
+                if attempt + 1 < attempts {
+                    tokio::time::sleep(backoff(attempt as u32, CALL_BACKOFF_CAP_MS)).await;
+                }
+            }
+        }
+    }
+    Err(Error::from_reason(format!(
+        "hermesmq: no reachable leader after {attempts} attempts; last error: {last}"
+    )))
+}
+
 fn err_response(e: proto::Error) -> Error {
     let mut msg = format!("{}: {}", e.code, e.message);
     if e.retry_after_ms > 0 {
@@ -302,6 +461,40 @@ fn err_response(e: proto::Error) -> Error {
 fn expect_ok(resp: Response) -> Result<()> {
     match resp.kind {
         Some(response::Kind::Ok(_)) => Ok(()),
+        Some(response::Kind::Error(e)) => Err(err_response(e)),
+        other => Err(Error::from_reason(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
+fn produce_request(options: ProduceOptions) -> Result<Request> {
+    let producer_id = options.producer_id.unwrap_or_default();
+    let seq = match options.seq {
+        Some(s) if s >= 0 => s as u64,
+        Some(_) => return Err(Error::from_reason("produce: seq must be >= 0")),
+        None if !producer_id.is_empty() => {
+            return Err(Error::from_reason(
+                "produce: producerId requires seq (a per-producer monotonic counter)",
+            ))
+        }
+        None => 0,
+    };
+    Ok(Request {
+        kind: Some(request::Kind::Produce(proto::Produce {
+            topic: options.topic,
+            priority: options.priority.unwrap_or(0),
+            content_type: 0,
+            payload: options.body.to_vec(),
+            producer_id,
+            seq,
+        })),
+    })
+}
+
+fn produced_offset(resp: Response) -> Result<String> {
+    match resp.kind {
+        Some(response::Kind::Produced(p)) => Ok(p.offset.to_string()),
         Some(response::Kind::Error(e)) => Err(err_response(e)),
         other => Err(Error::from_reason(format!(
             "unexpected response: {other:?}"
@@ -502,11 +695,13 @@ pub async fn connect(nodes: Vec<NodeAddr>, options: Option<ConnectOptions>) -> R
         })
         .collect();
     let pools = recs.iter().map(|_| Mutex::new(Vec::new())).collect();
+    let pipes = recs.iter().map(|_| Mutex::new(None)).collect();
     let client = Client {
         inner: Arc::new(Inner {
             nodes: recs,
             leader: AtomicUsize::new(0),
             pools,
+            pipes,
         }),
     };
     if options.and_then(|o| o.bootstrap).unwrap_or(false) {
@@ -569,23 +764,38 @@ impl Client {
 
     #[napi]
     pub async fn produce(&self, options: ProduceOptions) -> Result<String> {
-        let req = Request {
-            kind: Some(request::Kind::Produce(proto::Produce {
-                topic: options.topic,
-                priority: options.priority.unwrap_or(0),
-                content_type: 0,
-                payload: options.body.to_vec(),
-                producer_id: String::new(),
-                seq: 0,
-            })),
-        };
-        match call(&self.inner, &req, BASE_READ_TIMEOUT).await?.kind {
-            Some(response::Kind::Produced(p)) => Ok(p.offset.to_string()),
-            Some(response::Kind::Error(e)) => Err(err_response(e)),
-            other => Err(Error::from_reason(format!(
-                "unexpected response: {other:?}"
-            ))),
+        let req = produce_request(options)?;
+        produced_offset(call_pipelined(&self.inner, &req, BASE_READ_TIMEOUT).await?)
+    }
+
+    #[napi]
+    pub async fn produce_many(&self, items: Vec<ProduceOptions>) -> Result<Vec<ProduceManyResult>> {
+        let mut handles = Vec::with_capacity(items.len());
+        for item in items {
+            let inner = self.inner.clone();
+            handles.push(tokio::spawn(async move {
+                let req = produce_request(item)?;
+                produced_offset(call_pipelined(&inner, &req, BASE_READ_TIMEOUT).await?)
+            }));
         }
+        let mut out = Vec::with_capacity(handles.len());
+        for handle in handles {
+            out.push(match handle.await {
+                Ok(Ok(offset)) => ProduceManyResult {
+                    offset: Some(offset),
+                    error: None,
+                },
+                Ok(Err(e)) => ProduceManyResult {
+                    offset: None,
+                    error: Some(e.reason.to_string()),
+                },
+                Err(e) => ProduceManyResult {
+                    offset: None,
+                    error: Some(e.to_string()),
+                },
+            });
+        }
+        Ok(out)
     }
 
     #[napi]
@@ -717,6 +927,9 @@ impl Client {
     pub fn close(&self) {
         for pool in &self.inner.pools {
             pool.lock().unwrap().clear();
+        }
+        for pipe in &self.inner.pipes {
+            pipe.lock().unwrap().take();
         }
     }
 }

@@ -1,6 +1,6 @@
 {
   "name": "hermesmq-node",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Native Node.js client for hermesmq, a Raft-replicated message queue.",
   "main": "index.js",
   "types": "index.d.ts",
@@ -39,7 +39,7 @@
   "scripts": {
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
-    "test": "node smoke.mjs && node subscribe-smoke.mjs"
+    "test": "node smoke.mjs && node subscribe-smoke.mjs && node pipeline-smoke.mjs"
   },
   "devDependencies": {
     "@napi-rs/cli": "3.7.0"
