@@ -195,7 +195,10 @@ impl PipelineHandle {
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "produce pipeline is closed"))?;
         match tokio::time::timeout(read_timeout, rx).await {
-            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "response timed out")),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "response timed out",
+            )),
             Ok(Err(_)) => Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "produce pipeline dropped the request",
