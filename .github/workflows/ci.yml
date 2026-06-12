@@ -7,7 +7,7 @@ on:
   pull_request:
 
 env:
-  HERMESMQD_VERSION: 0.2.0
+  HERMESMQD_VERSION: 0.5.0
 
 jobs:
   test:

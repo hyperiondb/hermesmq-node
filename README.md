@@ -73,7 +73,47 @@ const offset = await client.produce({
 });
 ```
 
-`priority` ranges 0–7 (higher delivers first). Payloads are capped at 1 MiB by the server. Delivery is at-least-once: if a response is lost mid-retry, a message can be produced twice.
+`priority` ranges 0–7 (higher delivers first). Payloads are capped at 1 MiB by the server.
+
+All produces from one client share a single pipelined connection to the leader (up to 32 requests
+in flight), and the server group-commits concurrent produces into one Raft entry and one fsync —
+throughput scales with the number of in-flight produces at unchanged durability. A loop that
+awaits each `produce` is bound by one Raft round per message (~hundreds of msg/s); fire produces
+concurrently or use `produceMany` for batch workloads (thousands of msg/s).
+
+### Idempotent produce
+
+```js
+const offset = await client.produce({
+  topic: "orders",
+  body,
+  producerId: "billing-7f3a", // stable id for this producer
+  seq: 42,                    // per-producer monotonic counter
+});
+```
+
+A re-send with the same `producerId` + `seq` returns the original offset instead of appending a
+duplicate, which makes produce retries safe. Without them produce is at-least-once: a response
+lost mid-retry can append the message twice. `producerId` requires `seq`.
+
+### Batch produce
+
+```js
+const results = await client.produceMany(
+  orders.map((order, i) => ({
+    topic: "orders",
+    body: Buffer.from(JSON.stringify(order)),
+    producerId: "billing-7f3a",
+    seq: base + i,
+  })),
+);
+// each result: { offset?: string, error?: string }, aligned with the input array
+```
+
+`produceMany` pushes the whole batch through the pipeline concurrently and reports per-item
+outcomes, so partial failures are visible. Pair it with `producerId`/`seq` and retry only the
+failed items with their original seqs — items that actually committed dedup to their original
+offsets.
 
 ## Consuming
 

@@ -11,41 +11,58 @@ try {
   const client = await connect([{ id: 1, clientAddr, peerAddr }], { bootstrap: true });
   await client.createTopic({ topic: "bulk" });
 
-  const N = 2000;
+  const SERIAL_N = 100;
+  const BULK_N = 2000;
+  const BURST_N = 200;
   const producerId = "pipeline-smoke";
+  let seq = 0;
 
-  const t0 = Date.now();
+  const t0s = Date.now();
+  for (let i = 0; i < SERIAL_N; i++) {
+    await client.produce({
+      topic: "bulk",
+      body: Buffer.from(`serial-${i}`),
+      producerId,
+      seq: ++seq,
+    });
+  }
+  const serialRate = SERIAL_N / ((Date.now() - t0s) / 1000);
+
+  const bulkSeqBase = seq;
+  const t0b = Date.now();
   const results = await client.produceMany(
-    Array.from({ length: N }, (_, i) => ({
+    Array.from({ length: BULK_N }, (_, i) => ({
       topic: "bulk",
       body: Buffer.from(`msg-${i}`),
       producerId,
-      seq: i + 1,
+      seq: bulkSeqBase + i + 1,
     })),
   );
-  const dt = (Date.now() - t0) / 1000;
+  seq += BULK_N;
+  const bulkRate = BULK_N / ((Date.now() - t0b) / 1000);
   const failed = results.filter((r) => !r.offset);
   const offsets = new Set(results.map((r) => r.offset));
   console.log(
-    `produceMany: ${N} msgs in ${dt.toFixed(2)}s -> ${Math.round(N / dt)} msg/s; failed=${failed.length}`,
+    `serial: ${Math.round(serialRate)} msg/s; produceMany: ${Math.round(bulkRate)} msg/s ` +
+      `(${(bulkRate / serialRate).toFixed(1)}x); failed=${failed.length}`,
   );
 
   const dup = await client.produce({
     topic: "bulk",
     body: Buffer.from("msg-7-retry"),
     producerId,
-    seq: 8,
+    seq: bulkSeqBase + 8,
   });
   const dedupOk = dup === results[7].offset;
-  console.log(`idempotent retry: seq=8 -> offset ${dup} (original ${results[7].offset})`);
+  console.log(`idempotent retry: seq=${bulkSeqBase + 8} -> offset ${dup} (original ${results[7].offset})`);
 
   const burst = await Promise.all(
-    Array.from({ length: 200 }, (_, i) =>
+    Array.from({ length: BURST_N }, (_, i) =>
       client.produce({
         topic: "bulk",
         body: Buffer.from(`burst-${i}`),
         producerId,
-        seq: N + 1 + i,
+        seq: ++seq,
       }),
     ),
   );
@@ -57,6 +74,7 @@ try {
     rejected = true;
   }
 
+  const expected = SERIAL_N + BULK_N + BURST_N;
   let drained = 0;
   for (;;) {
     const msgs = await client.poll({ topic: "bulk", group: "g", max: 1024, visibilityMs: 60_000 });
@@ -64,16 +82,21 @@ try {
     drained += msgs.length;
     await Promise.all(msgs.map((m) => client.ack({ topic: "bulk", group: "g", leaseId: m.leaseId })));
   }
-  console.log(`drained ${drained} (expected ${N + 200})`);
+  console.log(`drained ${drained} (expected ${expected})`);
 
   ok =
     failed.length === 0 &&
-    offsets.size === N &&
+    offsets.size === BULK_N &&
     dedupOk &&
-    new Set(burst).size === 200 &&
+    new Set(burst).size === BURST_N &&
     rejected &&
-    drained === N + 200 &&
-    N / dt > 1000;
+    drained === expected &&
+    bulkRate > 3 * serialRate;
+  if (!ok && bulkRate <= 3 * serialRate) {
+    console.error(
+      `pipelining ineffective: bulk ${Math.round(bulkRate)} msg/s vs serial ${Math.round(serialRate)} msg/s`,
+    );
+  }
 } catch (e) {
   console.error("ERROR", e);
 } finally {
