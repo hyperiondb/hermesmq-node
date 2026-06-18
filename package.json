@@ -1,6 +1,6 @@
 {
   "name": "hermesmq-node",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Native Node.js client for hermesmq, a Raft-replicated message queue.",
   "main": "index.js",
   "types": "index.d.ts",
@@ -29,7 +29,8 @@
       "x86_64-unknown-linux-gnu",
       "aarch64-unknown-linux-gnu",
       "x86_64-unknown-linux-musl",
-      "aarch64-unknown-linux-musl"
+      "aarch64-unknown-linux-musl",
+      "x86_64-pc-windows-msvc"
     ]
   },
   "files": [
