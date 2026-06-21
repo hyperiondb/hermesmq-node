@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 description = "Native Node.js client for hermesmq, a Raft-replicated message queue"
 repository = "https://github.com/hyperiondb/hermesmq-node"
-license = "GPL-3.0-or-later"
+license = "AGPL-3.0-only"
 authors = ["Tadas Talaikis <info@nordlet.com>"]
 
 [lib]
