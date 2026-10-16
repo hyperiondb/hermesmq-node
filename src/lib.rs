@@ -634,7 +634,9 @@ impl SubscriptionTask {
         });
 
         loop {
-            let buf = match tokio::time::timeout(SUBSCRIBE_READ_TIMEOUT, read_frame(&mut read_half)).await {
+            let buf = match tokio::time::timeout(SUBSCRIBE_READ_TIMEOUT, read_frame(&mut read_half))
+                .await
+            {
                 Ok(Ok(b)) => b,
                 Ok(Err(e)) => {
                     return if self.stop.load(Ordering::SeqCst) {
