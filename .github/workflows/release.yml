@@ -82,7 +82,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: taiki-e/install-action@59012be0884e296ca2da49b530610e72c49039ad # v2.81.6
         with:
-          tool: cargo-zigbuild
+          tool: cargo-zigbuild@0.23.4
 
       - name: Install dependencies
         run: npm install
