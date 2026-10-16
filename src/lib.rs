@@ -22,6 +22,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const BASE_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const CALL_BACKOFF_CAP_MS: u64 = 500;
 const SUBSCRIBE_BACKOFF_CAP_MS: u64 = 5_000;
+const SUBSCRIBE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(15);
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+const TCP_KEEPALIVE_RETRIES: u32 = 3;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const TCP_USER_TIMEOUT: Duration = Duration::from_secs(30);
 const PIPELINE_DEPTH: usize = 32;
 const PIPELINE_QUEUE: usize = 1024;
 
@@ -280,6 +286,21 @@ async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+fn set_keepalive(stream: &TcpStream) -> io::Result<()> {
+    let sock = socket2::SockRef::from(stream);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(TCP_KEEPALIVE_IDLE)
+        .with_interval(TCP_KEEPALIVE_INTERVAL);
+    #[cfg(not(windows))]
+    let keepalive = keepalive.with_retries(TCP_KEEPALIVE_RETRIES);
+    #[cfg(windows)]
+    let _ = TCP_KEEPALIVE_RETRIES;
+    sock.set_tcp_keepalive(&keepalive)?;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    sock.set_tcp_user_timeout(Some(TCP_USER_TIMEOUT))?;
+    Ok(())
+}
+
 async fn request_on(
     stream: &mut TcpStream,
     req: &Request,
@@ -315,6 +336,7 @@ impl Inner {
                 )
             })??;
         stream.set_nodelay(true)?;
+        set_keepalive(&stream)?;
         Ok(stream)
     }
 
@@ -612,13 +634,23 @@ impl SubscriptionTask {
         });
 
         loop {
-            let buf = match read_frame(&mut read_half).await {
-                Ok(b) => b,
-                Err(e) => {
+            let buf = match tokio::time::timeout(SUBSCRIBE_READ_TIMEOUT, read_frame(&mut read_half)).await {
+                Ok(Ok(b)) => b,
+                Ok(Err(e)) => {
                     return if self.stop.load(Ordering::SeqCst) {
                         SubEnd::Stopped
                     } else {
                         SubEnd::Failed(format!("{addr}: {e}"))
+                    }
+                }
+                Err(_) => {
+                    return if self.stop.load(Ordering::SeqCst) {
+                        SubEnd::Stopped
+                    } else {
+                        SubEnd::Failed(format!(
+                            "{addr}: no frame from broker in {}s, reconnecting",
+                            SUBSCRIBE_READ_TIMEOUT.as_secs()
+                        ))
                     }
                 }
             };

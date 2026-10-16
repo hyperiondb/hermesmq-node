@@ -1,6 +1,6 @@
 [package]
 name = "hermesmq-node"
-version = "0.2.4"
+version = "0.3.0"
 edition = "2021"
 publish = false
 description = "Native Node.js client for hermesmq, a Raft-replicated message queue"
@@ -17,6 +17,7 @@ napi-derive = "=3.5.6"
 tokio = { version = "=1.52.3", features = ["rt-multi-thread", "time", "sync", "macros", "net", "io-util"] }
 prost = "=0.13.5"
 hermesmq-proto = "=0.2.0"
+socket2 = { version = "=0.6.4", features = ["all"] }
 
 [build-dependencies]
 napi-build = "=2.3.2"
